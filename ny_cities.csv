@@ -1,0 +1,11 @@
+city_id,name,population,hospital_beds
+0,New York City,8804190,23000
+1,Buffalo,278349,1800
+2,Rochester,211328,1500
+3,Yonkers,211569,550
+4,Syracuse,148620,1000
+5,Albany,99224,800
+6,New Rochelle,79726,400
+7,Mount Vernon,73893,350
+8,Schenectady,66135,450
+9,Utica,65283,400
