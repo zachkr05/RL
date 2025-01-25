@@ -1,56 +1,129 @@
-from stable_baselines3 import DQN
-from pandemic_sim import TravelEnv  # Import your custom environment
-from scipy.io import savemat  # To save data in MATLAB format
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+from pandemic_sim import TravelEnv
 
-def evaluate_dqn(env, model, num_episodes=100):
-    """
-    Run the trained model for a given number of episodes
-    and print out the total rewards and step counts.
-    """
-    max_steps = 1000  # Maximum steps per episode
-    rewards = []  # List to store rewards per episode
-    steps = []    # List to store steps per episode
+class QNetwork(torch.nn.Module):
+    def __init__(self, obs_dim, act_dim):
+        super().__init__()
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(obs_dim, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, 128),
+            torch.nn.ReLU(),
+            torch.nn.Linear(128, act_dim)
+        )
+    
+    def forward(self, x):
+        return self.net(x)
 
+def run_trained_agent(num_episodes=5, max_steps=1000, model_path="q_network.pth"):
+    # Initialize environment
+    env = TravelEnv()
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.n
+    
+    # Load trained model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    q_net = QNetwork(obs_dim, act_dim).to(device)
+    q_net.load_state_dict(torch.load(model_path, map_location=device))
+    q_net.eval()
+
+    # Initialize visualization
+    plt.figure(figsize=(15, 10))
+    
     for episode in range(num_episodes):
-        print(f"Starting Episode {episode + 1}")
-        obs = env.reset()
-        done = False
+        state = env.reset()
         total_reward = 0
-        step_count = 0  # To count steps per episode
+        done = False
+        step = 0
+        
+        # Tracking variables
+        infections = {city: [] for city in range(env.n_cities)}
+        budgets = []
+        actions = []
+        rewards = []
 
-        while not done:
-            # Use the trained DQN model to predict actions
-            action, _ = model.predict(obs, deterministic=True)
-
-            # Step through the environment
-            obs, reward, done, info = env.step(action)
-
-            # Accumulate the reward
-            total_reward += reward
-            step_count += 1
-
-            # End the episode if steps exceed 100
-            if step_count >= max_steps:
-                print(f"Step limit of {max_steps} reached. Ending episode early.")
+        print(f"\n=== Episode {episode+1} ===")
+        
+        while not done and step < max_steps:
+            # Convert state to tensor
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
+            
+            # Get Q-values from network
+            with torch.no_grad():
+                q_values = q_net(state_tensor)
+            
+            # Choose best action
+            action = q_values.argmax().item()
+            
+            # Take step in environment
+            next_state, reward, done, _ = env.step(action)
+            
+            # Store metrics
+            for city in range(env.n_cities):
+                infections[city].append(state[1 + city*5])  # Infection index in observation
+            budgets.append(env.budget)
+            actions.append(action)
+            rewards.append(reward)
+            
+            # Update state
+            state = next_state
+            step += 1
+            
+            if done:
                 break
 
-        rewards.append(total_reward)
-        steps.append(step_count)
-        print(f"Episode {episode + 1} ended with Total Reward: {total_reward}")
-        print(f"Steps in Episode {episode + 1}: {step_count}")
-        print("=" * 50)
+        # Visualization
+        plt.clf()
+        
+        # Infection Plot
+        plt.subplot(2, 2, 1)
+        for city, inf_data in infections.items():
+            plt.plot(inf_data, label=f'City {city}')
+        plt.title('Infection Trends')
+        plt.xlabel('Steps')
+        plt.ylabel('Infected Population')
+        plt.legend()
+        
+        # Budget Plot
+        plt.subplot(2, 2, 2)
+        plt.plot(budgets)
+        plt.title('Budget Over Time')
+        plt.xlabel('Steps')
+        plt.ylabel('Remaining Budget')
+        
+        # Action Distribution
+        plt.subplot(2, 2, 3)
+        action_counts = np.bincount(actions, minlength=act_dim)
+        plt.bar(range(act_dim), action_counts)
+        plt.title('Action Distribution')
+        plt.xlabel('Action ID')
+        plt.ylabel('Count')
+        
+        # Reward Tracking
+        plt.subplot(2, 2, 4)
+        cumulative_rewards = np.cumsum(rewards)
+        plt.plot(cumulative_rewards)
+        plt.title('Cumulative Reward')
+        plt.xlabel('Steps')
+        plt.ylabel('Total Reward')
 
-    # Save data to a MATLAB file
-    savemat("dqn_learning_data.mat", {"rewards": rewards, "steps": steps})
-    print("Data saved to dqn_learning_data.mat")
+        plt.tight_layout()
+        plt.savefig(f'episode_{episode+1}_performance.png')
+        plt.pause(0.1)
 
+        # Episode summary
+        print(f"\nEpisode {episode+1} Summary:")
+        print(f"Total Steps: {step}")
+        print(f"Final Budget: {env.budget:.2f}")
+        print(f"Total Infections: {sum(infections[city][-1] for city in range(env.n_cities))}")
+        print(f"Total Reward: {sum(rewards):.2f}")
+        print(f"Most Common Action: {np.argmax(action_counts)} (Count: {np.max(action_counts)})")
 
 if __name__ == "__main__":
-    # Create the env
-    test_env = TravelEnv()
-
-    # Load the saved model
-    loaded_model = DQN.load("dqn_travel_env")
-
-    # Evaluate
-    evaluate_dqn(test_env, loaded_model, num_episodes=10)
+    run_trained_agent(
+        num_episodes=3,
+        max_steps=20,
+        model_path="q_network.pth"
+    )

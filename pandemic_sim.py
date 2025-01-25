@@ -164,7 +164,7 @@ class TravelEnv(gym.Env):
             
             # External spread from neighbors
             for neighbor in neighbors:
-                if self.calculate_transmission_probability(neighbor, city_id) > np.random.random() * 0.0003:
+                if np.random.random() * 0.003 > self.calculate_transmission_probability(neighbor, city_id):
                     transmission_rate = self.get_infection_rate(neighbor)  # Reduced rate for external transmission
                     external_new_cases = int(
                         self.city_states[city_id]["susceptible"] * 
@@ -197,7 +197,7 @@ class TravelEnv(gym.Env):
         city_density = self.city_manager.get_city_data(city_id)["density"]
         max_density = max(city["density"] for city in self.city_manager.city_data.values())
         density_factor = city_density / max_density
-        return self.BASE_VACCINATION_COST * (1 - density_factor)
+        return self.BASE_VACCINATION_COST * density_factor
         
     def step(self, action):
         """
@@ -231,7 +231,7 @@ class TravelEnv(gym.Env):
         """
         # ----------------------
         # 1. Add money to budget (for example, the agent gets 5,000 each turn)
-        self.budget += 5000
+        self.budget += 1500
 
         # 2. Initialize cost/reward parameters
         cost = 0.0
@@ -281,8 +281,8 @@ class TravelEnv(gym.Env):
         self.update_infections()
         total_infected_after = sum(self.city_states[c]["infected"] for c in self.city_states)
         
-        infection_change = -total_infected_before + total_infected_after
-        reward = -cost + infection_change * 10
+        infection_change = total_infected_after -total_infected_before 
+        reward = -cost - infection_change * 10
 
         # 8. Check if done (simple examples below)
         # Condition 1: If budget is depleted, end episode
@@ -334,8 +334,9 @@ class TravelEnv(gym.Env):
 
         # 5. Optionally seed an infection in one or more cities
         #    (Example: Infect 100 people in city 0)
-        self.city_states[0]["infected"] = 100
-        self.city_states[0]["susceptible"] -= 100
+        initial_infected = min(100, self.city_populations[0])
+        self.city_states[0]["infected"] = initial_infected
+        self.city_states[0]["susceptible"] = self.city_populations[0] - initial_infected
 
         # 6. Build initial observation
         observation = self._build_observation()
