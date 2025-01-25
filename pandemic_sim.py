@@ -2,19 +2,14 @@ import numpy as np
 import networkx as nx
 import gym
 from gym import spaces
+from CityManager import CityManager
 
 class TravelEnv(gym.Env):
     def __init__(self):
         super().__init__()
         # city data
-        self.city_data = {
-            0: {"name": "NYC", "pop": 8400000, "beds": 23000},
-            1: {"name": "Buffalo", "pop": 278000, "beds": 1800},
-            2: {"name": "Rochester", "pop": 211000, "beds": 1500},
-            3: {"name": "Syracuse", "pop": 148000, "beds": 1000},
-            4: {"name": "Albany", "pop": 99000, "beds": 800}
-        }
-        self.n_cities = len(self.city_data)
+        self.city_manager = CityManager()  # Use the CityManager class
+        self.n_cities = self.city_manager.n_cities  
         
         # disease params
         self.mean_beta = 0.3  # Average infection rate
@@ -45,11 +40,17 @@ class TravelEnv(gym.Env):
             low=0, high=1, shape=(self.n_cities * 3,), dtype=np.float32  
         )
 
+        #initialize the graph
+
+
+
     def get_infection_rate(self):
         """Generate a Poisson-distributed infection rate."""
         poisson_lambda = self.mean_beta * 10  # Scale lambda to ensure reasonable range
         beta = np.random.poisson(poisson_lambda) / 10  # Scale back to original range
         return min(beta, 1.0)  # Cap infection rate at 1.0
+
+
 
 
 if __name__ == "__main__":
