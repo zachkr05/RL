@@ -47,10 +47,21 @@ class TravelEnv(gym.Env):
             self.graph.add_edge(edge[0], edge[1], weight=edge[2])
 
     def _setup_spaces(self):
-        self.action_space = spaces.Discrete(len(self.edges) + 2 * self.n_cities)
+        # Observation space:
+        # Each city contributes 5 features (susceptible, infected, recovered, vaccinated, marketing factor)
+        # Plus 1 feature per edge (indicating whether the edge is active or not)
+        obs_dim = self.n_cities * 5 + len(self.edges)
+
         self.observation_space = spaces.Box(
-            low=0, high=1, shape=(self.n_cities * 4,), dtype=np.float32
+            low=0, high=1, shape=(obs_dim,), dtype=np.float32
         )
+
+        # Action space:
+        # Close an edge: len(self.edges) actions
+        # Vaccinate a city: self.n_cities actions
+        # Improve marketing/cleanliness: self.n_cities actions
+        self.action_space = spaces.Discrete(len(self.edges) + 2 * self.n_cities)
+
 
     def _initialize_states(self):
         """Initialize city states with actual infected population counts."""
@@ -124,9 +135,6 @@ class TravelEnv(gym.Env):
         
 
         # If infection percentage is below threshold, no external transmission
-        print("source infection", source_infection_percentage)
-        print("source city", source_city)
-        print("target city", target_city)
         
         if source_infection_percentage < self.TRANSMISSION_THRESHOLD:
             return 0.0
@@ -134,7 +142,6 @@ class TravelEnv(gym.Env):
             
         edge_weight = self.graph[source_city][target_city]["weight"]
         base_probability = 1 / (1 + edge_weight/100)  # Normalize distance effect
-        print ("probability", base_probability * source_infection_percentage)
         return base_probability * source_infection_percentage
 
     def update_infections(self):
@@ -264,16 +271,18 @@ class TravelEnv(gym.Env):
         # 4. Deduct cost from budget
         self.budget -= cost
 
-        # 5. Update infections after action
-        self.update_infections()
-
         # 6. Build the new observation
         observation = self._build_observation()
 
         # 7. Define reward
         #    Typically you might want to penalize large infection spread or 
         #    reward lower infections. Here we demonstrate a simple negative cost:
-        reward = -cost
+        total_infected_before = sum(self.city_states[c]["infected"] for c in self.city_states)
+        self.update_infections()
+        total_infected_after = sum(self.city_states[c]["infected"] for c in self.city_states)
+        
+        infection_change = total_infected_before - total_infected_after
+        reward = -cost + infection_change * 10
 
         # 8. Check if done (simple examples below)
         # Condition 1: If budget is depleted, end episode
@@ -333,38 +342,26 @@ class TravelEnv(gym.Env):
         return observation
 
 
-        import numpy as np
-
     def _build_observation(self):
-        """
-        Build and return the current observation of the environment as a 1D numpy array.
-
-        Example contents (per city):
-        - Fraction of Susceptible (S)
-        - Fraction of Infected (I)
-        - Fraction of Recovered (R)
-        - Fraction of Vaccinated (V)
-        - Marketing/Cleanliness factor (M)
-
-        Returns:
-            np.ndarray: The observation vector describing each city in sequence,
-            for example: [S_0, I_0, R_0, V_0, M_0, S_1, I_1, R_1, V_1, M_1, ..., S_N, I_N, R_N, V_N, M_N].
-        """
         obs = []
         for city_id in range(self.n_cities):
-            pop = self.city_populations[city_id]  # e.g., 10000
-            s = self.city_states[city_id]["susceptible"] / pop if pop > 0 else 0.0
-            i = self.city_states[city_id]["infected"] / pop    if pop > 0 else 0.0
-            r = self.city_states[city_id]["recovered"] / pop   if pop > 0 else 0.0
-            v = self.city_states[city_id]["vaccinated"] / pop  if pop > 0 else 0.0
-            
-            # Marketing/Cleanliness factor is typically already in [0,1], so no normalization:
-            m = self.marketing_cleanliness_factors[city_id]
-
-            # Extend the observation array
-            obs.extend([s, i, r, v, m])
-
+            pop = self.city_populations[city_id]
+            city_obs = [
+                self.city_states[city_id]["susceptible"] / pop,
+                self.city_states[city_id]["infected"] / pop,
+                self.city_states[city_id]["recovered"] / pop,
+                self.city_states[city_id]["vaccinated"] / pop,
+                self.marketing_cleanliness_factors[city_id]
+            ]
+            obs.extend(city_obs)
+        
+        # Add edge states
+        edge_states = [1.0 if self.graph.has_edge(e[0], e[1]) else 0.0 for e in self.edges]
+        obs.extend(edge_states)
+        
         return np.array(obs, dtype=np.float32)
+    
+
     def render(self, mode="human"):
         """
         Render the current state of the environment.
