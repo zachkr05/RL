@@ -42,24 +42,28 @@ class QNetwork(nn.Module):
 class ReplayBuffer:
     def __init__(self, max_size=10000):
         self.buffer = deque(maxlen=max_size)
+        self.last_logged_size = 0  # Track the last logged buffer size
         logging.info(f"Initialized ReplayBuffer with max_size={max_size}")
-        
+    
     def push(self, state, action, reward, next_state, done):
         self.buffer.append((state, action, reward, next_state, done))
-        if len(self.buffer) % 1000 == 0:
+        
+        # Log only if the size changes (up to max_size)
+        if len(self.buffer) > self.last_logged_size and len(self.buffer) < self.buffer.maxlen:
+            self.last_logged_size = len(self.buffer)
             logging.info(f"ReplayBuffer size: {len(self.buffer)}")
         
+        # Log once when the buffer is full
+        if len(self.buffer) == self.buffer.maxlen and self.last_logged_size != self.buffer.maxlen:
+            self.last_logged_size = self.buffer.maxlen
+            logging.info(f"ReplayBuffer reached maximum size: {self.buffer.maxlen}")
+    
     def sample(self, batch_size=64):
         batch = random.sample(self.buffer, batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
-        return (np.array(states),
-                np.array(actions),
-                np.array(rewards),
-                np.array(next_states),
-                np.array(dones, dtype=np.float32))
-        
-    def __len__(self):
-        return len(self.buffer)
+        return (np.array(states), np.array(actions), np.array(rewards),
+                np.array(next_states), np.array(dones, dtype=np.float32))
+
 
 
 # -----------------------------
@@ -113,6 +117,7 @@ def train_q_network(
     target_net.load_state_dict(q_net.state_dict())
     target_net.eval()
     
+
     optimizer = optim.Adam(q_net.parameters(), lr=lr)
     replay_buffer = ReplayBuffer(max_size=20000)
     
