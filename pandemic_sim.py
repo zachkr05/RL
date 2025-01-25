@@ -12,7 +12,7 @@ class TravelEnv(gym.Env):
     BASE_VACCINATION_COST = 10000
     MEAN_BETA = 0.3
     GAMMA = 0.1
-    TRANSMISSION_THRESHOLD = 0.1  # Minimum infection percentage for transmission
+    TRANSMISSION_THRESHOLD = 0.00001  # Minimum infection percentage for transmission
     
     def __init__(self):
         super().__init__()
@@ -26,7 +26,7 @@ class TravelEnv(gym.Env):
         self.city_manager = CityManager()
         self.n_cities = self.city_manager.n_cities
         self.city_populations = {
-            city_id: self.city_manager.get_city_data(city_id)["population"]
+            city_id: self.city_manager.get_city_data(city_id)["pop"]
             for city_id in range(self.n_cities)
         }
 
@@ -47,9 +47,9 @@ class TravelEnv(gym.Env):
             self.graph.add_edge(edge[0], edge[1], weight=edge[2])
 
     def _setup_spaces(self):
-        self.action_space = spaces.Discrete(len(self.edges) + self.n_cities)
+        self.action_space = spaces.Discrete(len(self.edges) + 2 * self.n_cities)
         self.observation_space = spaces.Box(
-            low=0, high=1, shape=(self.n_cities * 3,), dtype=np.float32
+            low=0, high=1, shape=(self.n_cities * 4,), dtype=np.float32
         )
 
     def _initialize_states(self):
@@ -124,12 +124,17 @@ class TravelEnv(gym.Env):
         
 
         # If infection percentage is below threshold, no external transmission
+        print("source infection", source_infection_percentage)
+        print("source city", source_city)
+        print("target city", target_city)
+        
         if source_infection_percentage < self.TRANSMISSION_THRESHOLD:
             return 0.0
+
             
         edge_weight = self.graph[source_city][target_city]["weight"]
         base_probability = 1 / (1 + edge_weight/100)  # Normalize distance effect
-        
+        print ("probability", base_probability * source_infection_percentage)
         return base_probability * source_infection_percentage
 
     def update_infections(self):
@@ -142,7 +147,7 @@ class TravelEnv(gym.Env):
             total_new_infected = 0
             
             # Internal spread
-            current_rate = self.get_infection_rate()
+            current_rate = self.get_infection_rate(city_id)
             internal_new_cases = int(
                 self.city_states[city_id]["susceptible"] * 
                 current_rate * 
@@ -152,8 +157,8 @@ class TravelEnv(gym.Env):
             
             # External spread from neighbors
             for neighbor in neighbors:
-                if self.calculate_transmission_probability(neighbor, city_id) > np.random.random():
-                    transmission_rate = self.get_infection_rate(self.MEAN_BETA * 0.5)  # Reduced rate for external transmission
+                if self.calculate_transmission_probability(neighbor, city_id) > np.random.random() * 0.0003:
+                    transmission_rate = self.get_infection_rate(neighbor)  # Reduced rate for external transmission
                     external_new_cases = int(
                         self.city_states[city_id]["susceptible"] * 
                         transmission_rate
@@ -186,23 +191,237 @@ class TravelEnv(gym.Env):
         max_density = max(city["density"] for city in self.city_manager.city_data.values())
         density_factor = city_density / max_density
         return self.BASE_VACCINATION_COST * (1 - density_factor)
-    
-    def step():
-        """Execute one time step within the environment.
         
-        Args:
-            action: 
-        
-        Returns:
-            observation: Current state of the environment
-            cost: Reward for the action taken
-            done: Whether the episode has ended
-            info: Additional information
+    def step(self, action):
         """
+        Execute one time step within the environment. 
+        Each step the agent will get more money and take an action that will cost them money.
+
+        Actions:
+            1) Closing an edge (travel restriction)
+            2) Vaccinating a city
+            3) Improving marketing/cleanliness in a city
+
+        Action mapping:
+        - 0 to (len(self.edges) - 1): Close one of the edges.
+        - len(self.edges) to (len(self.edges) + self.n_cities - 1): Vaccinate a city.
+        - len(self.edges) + self.n_cities to (len(self.edges) + 2*self.n_cities - 1): Improve marketing/cleanliness in a city.
+
+        Args:
+            action (int): The index representing the chosen action. 
+
+        Returns:
+            observation (np.ndarray): A numpy array representing the new state of the 
+                environment after the action, usually in normalized form 
+                (e.g., susceptible/infected/recovered fractions per city).
+            reward (float): The immediate reward (or negative cost) for taking the given 
+                action (e.g., cost of vaccines, cost of marketing, etc.).
+            done (bool): A boolean indicating whether the current episode has ended. 
+                (You can define custom conditions such as if budget is exceeded or 
+                infection is zero in all cities.)
+            info (dict): A dictionary with additional information useful for debugging 
+                or logging, typically not used by most RL algorithms.
+        """
+        # ----------------------
+        # 1. Add money to budget (for example, the agent gets 5,000 each turn)
+        self.budget += 5000
+
+        # 2. Initialize cost/reward parameters
+        cost = 0.0
+        done = False
+        info = {}
+
+        # 3. Interpret the action
+        num_edge_actions = len(self.edges)
+        num_city_actions = self.n_cities
+
+        if action < num_edge_actions:
+            # (1) Close an edge
+            edge_to_close = self.edges[action]
+            if self.graph.has_edge(edge_to_close[0], edge_to_close[1]):
+                self.graph.remove_edge(edge_to_close[0], edge_to_close[1])
+                cost += 2000  # Arbitrary cost for closing an edge
+        elif action < num_edge_actions + num_city_actions:
+            # (2) Vaccinate a city
+            city_id = action - num_edge_actions
+            if self.city_states[city_id]["susceptible"] > 0:
+                # Vaccinate 10% of remaining susceptibles (example)
+                new_vacc = int(self.city_states[city_id]["susceptible"] * 0.1)
+                self.city_states[city_id]["vaccinated"] += new_vacc
+                self.city_states[city_id]["susceptible"] -= new_vacc
+                # Cost of vaccinating
+                cost += self.calculate_vaccination_cost(city_id)
+        else:
+            # (3) Improve marketing/cleanliness
+            city_id = action - (num_edge_actions + num_city_actions)
+            current_factor = self.marketing_cleanliness_factors[city_id]
+            increment = 0.1  # example increment
+            new_factor = min(current_factor + increment, 1.0)
+            self.marketing_cleanliness_factors[city_id] = new_factor
+            # Cost of improving marketing, e.g., scale by how much factor changed
+            cost += 1000 * (new_factor - current_factor)
+
+        # 4. Deduct cost from budget
+        self.budget -= cost
+
+        # 5. Update infections after action
+        self.update_infections()
+
+        # 6. Build the new observation
+        observation = self._build_observation()
+
+        # 7. Define reward
+        #    Typically you might want to penalize large infection spread or 
+        #    reward lower infections. Here we demonstrate a simple negative cost:
+        reward = -cost
+
+        # 8. Check if done (simple examples below)
+        # Condition 1: If budget is depleted, end episode
+        if self.budget < 0:
+            done = True
+            info["reason"] = "budget_depleted"
+
+        # Condition 2: If all cities have 0 infected, we could consider it "win/controlled"
+        total_infected = sum(self.city_states[c]["infected"] for c in self.city_states)
+        if total_infected == 0:
+            done = True
+            info["reason"] = "no_infections_left"
+
+        return observation, reward, done, info
+
+
+    def reset(self):
+        """
+        Reset the environment to an initial state and return the initial observation.
+
+        Returns:
+            observation (np.ndarray): The initial state of the environment, 
+                often normalized (e.g., susceptible/infected/recovered fractions 
+                in each city).
+        """
+        # 1. Re-initialize city states
+        self.city_states = {}
+        for city_id in range(self.n_cities):
+            total_pop = self.city_populations[city_id]
+            self.city_states[city_id] = {
+                "susceptible": total_pop,
+                "infected": 0,
+                "recovered": 0,
+                "vaccinated": 0
+            }
+
+        # 2. Reset the graph (in case edges were removed)
+        self.graph.clear()
+        for edge in self.edges:
+            self.graph.add_edge(edge[0], edge[1], weight=edge[2])
+
+        # 3. Reset marketing/cleanliness factors
+        self.marketing_cleanliness_factors = {
+            city_id: 0.2 for city_id in range(self.n_cities)
+        }
+
+        # 4. Reset budget (example: might depend on your initial formula)
+        self.budget = self.BASE_BUDGET_PER_CITY * self.n_cities
+
+        # 5. Optionally seed an infection in one or more cities
+        #    (Example: Infect 100 people in city 0)
+        self.city_states[0]["infected"] = 100
+        self.city_states[0]["susceptible"] -= 100
+
+        # 6. Build initial observation
+        observation = self._build_observation()
+        return observation
+
+
+        import numpy as np
+
+    def _build_observation(self):
+        """
+        Build and return the current observation of the environment as a 1D numpy array.
+
+        Example contents (per city):
+        - Fraction of Susceptible (S)
+        - Fraction of Infected (I)
+        - Fraction of Recovered (R)
+        - Fraction of Vaccinated (V)
+        - Marketing/Cleanliness factor (M)
+
+        Returns:
+            np.ndarray: The observation vector describing each city in sequence,
+            for example: [S_0, I_0, R_0, V_0, M_0, S_1, I_1, R_1, V_1, M_1, ..., S_N, I_N, R_N, V_N, M_N].
+        """
+        obs = []
+        for city_id in range(self.n_cities):
+            pop = self.city_populations[city_id]  # e.g., 10000
+            s = self.city_states[city_id]["susceptible"] / pop if pop > 0 else 0.0
+            i = self.city_states[city_id]["infected"] / pop    if pop > 0 else 0.0
+            r = self.city_states[city_id]["recovered"] / pop   if pop > 0 else 0.0
+            v = self.city_states[city_id]["vaccinated"] / pop  if pop > 0 else 0.0
+            
+            # Marketing/Cleanliness factor is typically already in [0,1], so no normalization:
+            m = self.marketing_cleanliness_factors[city_id]
+
+            # Extend the observation array
+            obs.extend([s, i, r, v, m])
+
+        return np.array(obs, dtype=np.float32)
+    def render(self, mode="human"):
+        """
+        Render the current state of the environment.
+
+        Args:
+            mode (str): The mode to render with. "human" is the default.
+        
+        Example:
+            Prints out the current state of each city, including:
+            - Susceptible, Infected, Recovered, Vaccinated populations
+            - Marketing/Cleanliness factors
+        """
+        print("Current State:")
+        for city_id in range(self.n_cities):
+            state = self.city_states[city_id]
+            print(
+                f"City {city_id}: "
+                f"S={state['susceptible']}, I={state['infected']}, "
+                f"R={state['recovered']}, V={state['vaccinated']}, "
+                f"Marketing={self.marketing_cleanliness_factors[city_id]:.2f}"
+            )
+        print(f"Budget: {self.budget}")
+        print("-" * 30)
+
+
+
 
 if __name__ == "__main__":
+    # Initialize the environment
     env = TravelEnv()
-    env.city_states[0]["infected"] = 100  # Start with 100 infected in first city
-    print("Initial state:", env.city_states)
-    env.update_infections()
-    print("After update:", env.city_states)
+    
+    # Reset the environment to get the initial observation
+    observation = env.reset()
+    print("Initial Observation:", observation)
+    
+    # Simulate a few steps
+    done = False
+    steps = 0
+    total_reward = 0
+    
+    while not done and steps < 10:  # Run for a maximum of 10 steps
+        print(f"Step {steps + 1}:")
+        
+        # Random action for testing
+        action = env.action_space.sample()
+        print(f"Taking action: {action}")
+        
+        # Step through the environment
+        observation, reward, done, info = env.step(action)
+        
+        # Render the environment (prints the state to the console)
+        env.render()
+        
+        print(f"Reward: {reward}")
+        total_reward += reward
+        
+        steps += 1
+    
+    print("Simulation ended.")
+    print(f"Total reward after {steps} steps: {total_reward}")
