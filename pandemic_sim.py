@@ -281,7 +281,7 @@ class TravelEnv(gym.Env):
         self.update_infections()
         total_infected_after = sum(self.city_states[c]["infected"] for c in self.city_states)
         
-        infection_change = total_infected_before - total_infected_after
+        infection_change = -total_infected_before + total_infected_after
         reward = -cost + infection_change * 10
 
         # 8. Check if done (simple examples below)
